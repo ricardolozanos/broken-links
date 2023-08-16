@@ -1,9 +1,7 @@
 import requests
 import openpyxl
-#import csv
 import tkinter as tk
 import os
-#import shutil
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
@@ -12,6 +10,11 @@ from tkinter import messagebox
 from tkinter.ttk import Progressbar, Treeview,  Combobox
 from controller import Controller
 from PIL import Image, ImageTk
+import concurrent.futures
+import threading
+import time  
+import queue  
+
 
 
 ######################################################################
@@ -51,10 +54,15 @@ class App:
         self.current_link = 0
         self.total_links = 0
 
+        #Save Links to prevent multiple requests
+        self.workingLinks = []
+        self.brokenLinks = []
+
         # Load the image
         image_path = "icon/icon.png"
         image = Image.open(image_path)
 
+        self.reports_folder = "Reports"
         max_width = 100
         max_height = 100
         image.thumbnail((max_width, max_height))
@@ -71,21 +79,17 @@ class App:
         self.folder_frame.pack(fill=tk.BOTH, pady=10)
 
         self.folder_var = tk.StringVar()
-        self.folder_options = self.controller.get_folders_in_same_level()
+        self.folder_options = self.controller.get_files_in_excel_folder()
         if self.folder_options:
             self.folder_var.set(self.folder_options[0])
+
 
         # Image Label
         self.image_label = tk.Label(self.folder_frame, image=self.photo_image)
         self.image_label.pack(side=tk.LEFT)
 
-        # Select Folder Label
-        self.folder_label = tk.Label(self.folder_frame, text="Select Folder:", font=('Helvetica', 14))
-        self.folder_label.pack(side=tk.LEFT)
 
-        self.folder_dropdown = Combobox(self.folder_frame, textvariable=self.folder_var, values=self.folder_options)
-        self.folder_dropdown.pack(side=tk.LEFT)
-
+        
         
         # Excel List Frame
         self.excel_list_frame = tk.Frame(self.main_frame)
@@ -103,12 +107,23 @@ class App:
         self.excel_listbox.tag_configure("evenrow", background="white")
         self.excel_listbox.tag_configure("oddrow", background="lightgray")
 
-        # Bind the update_excel_list function to the Combobox selection event
-        self.folder_dropdown.bind("<<ComboboxSelected>>", self.update_excel_list)
-
+        self.update_excel_list()
+        
         # Progress Labels for Page and Link Progress Bars
         self.page_progress_label = tk.Label(self.excel_list_frame, text="", font=('Helvetica', 12))
         self.page_progress_label.pack()
+
+        self.page_progress_var = tk.StringVar()
+        self.page_progress = tk.Label(self.root, textvariable=self.page_progress_var)
+        self.page_progress.pack()
+
+        self.files_name=' '
+
+        # Start a worker thread
+        self.worker_thread = threading.Thread(target=self.worker_function)
+        self.worker_thread.start()
+
+        self.queue = queue.Queue()
 
         self.link_progress_label = tk.Label(self.excel_list_frame, text="", font=('Helvetica', 12))
         self.link_progress_label.pack()
@@ -119,16 +134,33 @@ class App:
                                          page_progress_label=self.page_progress_label,
                                          link_progress_label=self.link_progress_label)
         self.start_button.pack()
+
+        # Start a periodic task to update the progress bar
+        self.root.after(100, self.update_progress)
     
+    def worker_function(self):
+        for i in range(1, 11):
+            # Simulate some work
+            time.sleep(1)
+            self.queue.put((i, 10))  # Put progress update in the queue
+
+    def update_progress(self):
+        try:
+            while True:
+                current_value, total = self.queue.get_nowait()  # Get updates from the queue
+                self.page_progress_var.set(f"Page {current_value}/{total}")
+        except queue.Empty:
+            pass
+        self.root.after(100, self.update_progress)
 
     # Get the list of Excel files in the selected folder
     def get_excel_files(self, folder_path):
-        return [f for f in os.listdir(folder_path) if f.endswith(".xlsx")]
+        return [f for f in os.listdir(folder_path) if f.endswith(".xlsx") and not f.startswith('.')]
 
         # Function to update the Excel files list based on the selected folder
-    def update_excel_list(self, event):
-        selected_folder = self.folder_var.get()
-        excel_files = self.get_excel_files(selected_folder)
+    
+    def update_excel_list(self, event=None):
+        excel_files = self.controller.get_files_in_excel_folder()
 
         # Clear the listbox before updating
         self.excel_listbox.delete(*self.excel_listbox.get_children())
@@ -136,18 +168,32 @@ class App:
         # Populate the listbox
         for i, excel_file in enumerate(excel_files):
             self.excel_listbox.insert("", "end", values=(excel_file, "", ""), tags=("evenrow",) if i % 2 == 0 else ("oddrow",))
-    
+
+
+
+
     def start_link_checking_thread(self):
+        self.folder_var.set("Documents/Excel_Files")
+        selected_items = self.excel_listbox.selection()
+        if not selected_items:
+            messagebox.showinfo("Error", "Please select an Excel file.")
+            return
+
+        selected_excel_with_extension = self.excel_listbox.item(selected_items[0], "values")[0]
+        selected_excel_name, _ = os.path.splitext(selected_excel_with_extension)
+
+        excel_folder = os.path.join("Documents", "Excel_Files")
+        excel_file_path = os.path.join(excel_folder, selected_excel_with_extension)
+
         thread = Thread(target=self.check_links_thread)
         thread.start()
 
         self.current_page = 1
-        
         self.update_page_progress(self.current_page, self.total_pages)
 
 
+
     def check_links_thread(self):
-        folder_path = self.folder_var.get()
         
         # Check if any item is selected in the Treeview
         selected_items = self.excel_listbox.selection()
@@ -158,8 +204,9 @@ class App:
         # Retrieve the selected item and proceed with link checking
         selected_excel_with_extension = self.excel_listbox.item(selected_items[0], "values")[0]
         selected_excel_name, _ = os.path.splitext(selected_excel_with_extension)
+        self.files_name= selected_excel_name
         excel_file_path = os.path.join(self.folder_var.get(), selected_excel_with_extension)
-        print(excel_file_path)
+        
 
 
         broken_links_report = self.check_broken_links(excel_file_path)
@@ -167,18 +214,24 @@ class App:
         if broken_links_report:
             print("Broken Links Report:")
             total_links = len(broken_links_report)
-            for i, (link, page_link, section, relative) in enumerate(broken_links_report):
+            for i, (link, page_link, section, relative, linkname) in enumerate(broken_links_report):
                 print(f"Broken Link on page '{link}' in '{section}' section: {page_link}, relative: {relative}")
                 self.update_link_progress(i + 1, total_links)
             self.link_progress_label.config(text="Link checking completed.")
             
             # Save the report to the appropriate folder
             try:
-                report_folder = self.save_report_to_folder(folder_path, selected_excel_name, broken_links_report)
+                print(selected_excel_name)
+                report_folder = self.save_report_to_folder(self.folder_var.get(), selected_excel_name, broken_links_report)
                 print(f"Broken links report saved to '{report_folder}'.")
 
                 # Generate Word document from Excel data
-                word_output_file = os.path.join(report_folder, "broken_links_report.docx")
+                current_datetime = datetime.now()
+
+                # Combine year, month, and day as a single integer
+                today = int(f"{current_datetime.year:04}{current_datetime.month:02}{current_datetime.day:02}")
+
+                word_output_file = os.path.join(report_folder, f"{self.files_name}_broken_links_report_{today}.docx")
                 self.controller.create_word_document_from_excel(broken_links_report, word_output_file)
                 print(f"Word document created at '{word_output_file}'.")
             except NotADirectoryError as e:
@@ -212,6 +265,8 @@ class App:
             print(self.total_pages)
             progress_bar = Progressbar(self.root, orient='horizontal', length=300, maximum=self.total_pages, mode='determinate')
             progress_bar.pack()
+
+            threads = []
             
             for link_cell, template_cell in zip(sheet[column_with_links], sheet[column_with_templates]):
                 if link_cell.value:
@@ -223,7 +278,6 @@ class App:
                     
                     # Calculate the total number of links for the current page
                     self.total_links = len(page_links)
-                    print(self.total_links)
                     # Page pro  gress bar starts here
                     page_progress_var = tk.DoubleVar()
                     page_progress = Progressbar(self.root, variable=page_progress_var, length=300, maximum=self.total_links, mode='determinate')
@@ -232,46 +286,30 @@ class App:
                     # Update page progress label
                     self.update_page_progress(total_links_checked, self.total_pages)
 
+                    thread_pool=[]
+                    
                     for i, page_link in enumerate(page_links):
-                        absolute_link = urljoin(link, page_link)
-                        final_url = self.controller.get_final_url(absolute_link)
-                        section = self.controller.identify_section(link, page_link, template)
-                        
-                        try:
-                            if final_url is not None:
-                                try:
-                                    response = requests.get(final_url)
-                                    if response.status_code != 200:
-                                        if (link, final_url, section, page_link) not in broken_links_report:  # Check for duplicates
-                                            broken_links_report.append((link, final_url, section, page_link))
-                                            print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
-                                        else:
-                                            print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
-                                    else:
-                                        pass  # No need for this message
-                                except requests.exceptions.RequestException:
-                                    if (link, final_url, section, page_link) not in broken_links_report:  # Check for duplicates
-                                        broken_links_report.append((link, final_url, section, page_link))
-                                        print(f"Connection error occurred for link on page '{link}' in '{section}' section: {final_url}", end='\r')
-                                    else:
-                                        print(f"Duplicate connection error occurred for link on page '{link}': {final_url}", end='\r')
-                            else:
-                                # Include invalid links in the broken links report
-                                broken_links_report.append((link, page_link, section, "Invalid URL"))
-                                print(f"Invalid URL: {absolute_link}", end='\r')
-                            page_progress_var.set(i + 1)
-                            self.update_link_progress(i + 1, self.total_links)
-                            self.root.update_idletasks()
-                        except TypeError as e:
-                            print(f"Error: Unexpected value in cell ({link_cell.row}, {link_cell.column}). {e}")
-                            print(f"Skipping the link and continuing...")
-                            continue
-                        self.current_page += 1
-                        page_progress['value']=self.current_page
-                    page_progress.destroy()
+                        thread = threading.Thread(target=self.check_link, args=(page_progress_var, i, link, page_link, template, broken_links_report, link_cell, page_progress))
+                        thread.start()
+                        thread_pool.append(thread)
 
-                    progress_bar['value'] = total_links_checked
-                    self.root.update_idletasks()
+                        if len(thread_pool) >= 30:
+                            for thread in thread_pool:
+                                thread.join()
+                            thread_pool = []
+
+                    threads.extend(thread_pool)
+                    self.current_page += 1
+                    page_progress['value']=self.current_page
+                page_progress.destroy()
+
+                progress_bar['value'] = total_links_checked
+                self.root.update_idletasks()
+
+            
+                # Wait for all threads to finish
+            for thread in threads:
+                thread.join()
 
             print("\nLink checking completed.")
             print(f"Total pages checked: {total_links_checked}")
@@ -288,35 +326,147 @@ class App:
             print(f"Error: An unexpected error occurred while processing the file '{excel_file}': {e}")
             return []
     
-    #NO SELFS
-    def save_report_to_folder(self, folder_path, excel_name, report_data):
-        # Create a folder with the name of the Excel file (if it doesn't exist)
-        excel_folder = os.path.join(folder_path, excel_name)
-        if not os.path.exists(excel_folder):
-            os.makedirs(excel_folder)
+    def check_link(self, page_progress_var, i, link, page_link, template, broken_links_report,link_cell, page_progress):
+        absolute_link = urljoin(link, page_link)
+        final_url = self.controller.get_final_url(absolute_link)
+        section, link_name = self.controller.identify_section(link, page_link, template)
+        broken_link_info = (link, final_url, section, page_link, link_name)  # Define broken_link_info once
 
-        # Check if the excel_folder is a valid directory
-        if not os.path.isdir(excel_folder):
-            raise NotADirectoryError(f"'{excel_folder}' is not a valid directory.")
+        if section =='Footer':
+            return
+        
+        if final_url in self.brokenLinks:
+            print("Broken Link already found before...")
+            if broken_link_info not in broken_links_report:  # Check for duplicates
+                broken_links_report.append(broken_link_info)
+                print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
+            else:
+                #broken_links_report.append(broken_link_info)
+                print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
+            return
+        
+        if final_url in self.workingLinks:
+            return
+
+        try:
+            if final_url is None:
+                final_url=link
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+                }
+                response = requests.get(final_url, headers=headers)
+
+                if response.status_code != 200:
+                    self.brokenLinks.append(final_url)
+                    if broken_link_info not in broken_links_report:  # Check for duplicates
+                        broken_links_report.append(broken_link_info)
+                        print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
+                    else:
+                        #broken_links_report.append(broken_link_info)
+                        print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
+                else:
+                    self.workingLinks.append(final_url)
+                    pass  # No need for this message
+            except requests.exceptions.SSLError as ssl_error:
+                # Attempt the request again with verify=False in case of SSL verification error
+                print(f"SSL verification error occurred for link: {link}, Error: {ssl_error}")
+                try:
+                    response = requests.get(final_url, headers=headers, verify=False)
+                    if response.status_code != 200:
+                        self.brokenLinks.append(final_url)
+
+                        if broken_link_info not in broken_links_report:  # Check for duplicates
+                            broken_links_report.append(broken_link_info)
+                            print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
+                        else:
+                            #broken_links_report.append(broken_link_info)
+                            print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
+                    else:
+                        self.workingLinks.append(final_url)
+                        pass  
+                except requests.exceptions.RequestException as e:
+                    self.brokenLinks.append(final_url)
+
+                    if broken_link_info not in broken_links_report:
+                        broken_links_report.append(broken_link_info)
+                    else:
+                        print("Error...")
+                        #broken_links_report.append(broken_link_info)
+                    print(f"Error occurred for link (retry): {link}, Error: {e}")
+            except requests.exceptions.RequestException:
+                self.brokenLinks.append(final_url)
+
+                if broken_link_info not in broken_links_report:  # Check for duplicates
+                    broken_links_report.append(broken_link_info)
+                    print(f"Connection error occurred for link on page '{link}' in '{section}' section: {final_url}", end='\r')
+                else:
+                    #broken_links_report.append(broken_link_info)
+                    print(f"Duplicate connection error occurred for link on page '{link}': {final_url}", end='\r')
+            page_progress_var.set(i + 1)
+            self.update_link_progress(i + 1, self.total_links)
+            self.root.update_idletasks()
+        except TypeError as e:
+            print(f"Error: Unexpected value in cell ({link_cell.row}, {link_cell.column}). {e}")
+            print(f"Skipping the link and continuing...")
+        
+
+
+
+    #NO SELFS
+    def save_report_to_folder(self, excel_folder_name, excel_name, report_data):
+        # Create a folder for reports if it doesn't exist
+        if not os.path.exists(self.reports_folder):
+            os.makedirs(self.reports_folder)
+
+        # Create a folder with the name of the Excel file inside the reports folder (if it doesn't exist)
+        excel_report_folder = os.path.join(self.reports_folder, excel_name)
+        if not os.path.exists(excel_report_folder):
+            os.makedirs(excel_report_folder)
 
         # Get the number of existing reports in the folder
-        report_count = len([f for f in os.listdir(excel_folder) if f.startswith("Report_")])
+        report_count = len([f for f in os.listdir(excel_report_folder) if f.startswith("Report_")])
 
         # Create a folder for the current report with the format "Report_x_{time}"
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_folder_name = f"Report_{report_count + 1}_{now}"
-        report_folder = os.path.join(excel_folder, report_folder_name)
+        report_folder = os.path.join(excel_report_folder, report_folder_name)
         os.makedirs(report_folder)
 
+        # Generate Word document from Excel data
+        current_datetime = datetime.now()
+
+        # Combine year, month, and day as a single integer
+        today = int(f"{current_datetime.year:04}{current_datetime.month:02}{current_datetime.day:02}")
         # Save the broken links report to a CSV file inside the report folder
-        csv_file_path = os.path.join(report_folder, "broken_links_report.csv")
-        header = ["Page", "Broken Link", "Section", "Relative Link"]
+        csv_file_path = os.path.join(report_folder, f"{self.files_name}_broken_links_report_{today}.csv")
+        header = ["Page", "Broken Link", "Section", "Relative Link", "Link Name"]
         self.controller.save_to_csv(csv_file_path, report_data, header)
 
         return report_folder
-    
-    def update_page_progress(self,current_page, total_pages):
-        self.page_progress_label.config(text=f"Page {current_page}/{total_pages}")
 
-    def update_link_progress(self,current_link, total_links):
-        self.link_progress_label.config(text=f"Link {current_link}/{total_links}")
+
+
+    
+    def update_page_progress(self, current_page, total_pages):
+        self.current_page = current_page
+        self.total_pages = total_pages
+
+        # Schedule the update of the progress bar on the main thread
+        self.root.after(0, self.update_page_progress_gui)
+
+    def update_page_progress_gui(self):
+        # Update the progress bar on the main thread
+        self.page_progress['value'] = self.current_page
+        self.page_progress_label.config(text=f"Page {self.current_page} of {self.total_pages}")
+
+    def update_link_progress(self, current_link, total_links):
+        self.current_link = current_link
+        self.total_links = total_links
+
+        # Schedule the update of the link progress label on the main thread
+        self.root.after(0, self.update_link_progress_gui)
+
+    def update_link_progress_gui(self):
+        # Update the link progress label on the main thread
+        self.link_progress_label.config(text=f"Link {self.current_link}/{self.total_links}")

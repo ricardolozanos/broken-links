@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from controller import Controller
 from app import App
