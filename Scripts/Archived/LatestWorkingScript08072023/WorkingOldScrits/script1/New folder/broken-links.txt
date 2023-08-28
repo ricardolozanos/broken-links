@@ -1,0 +1,13 @@
+@echo off
+
+REM Activate conda environment
+call conda activate projects
+
+REM Change directory to the script folder
+cd "C:\Users\Ricar\Desktop\script"
+
+REM Run the Python script
+python main.py
+
+REM Deactivate conda environment (optional, you can remove this line if you don't want to deactivate)
+call conda deactivate

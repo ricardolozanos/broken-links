@@ -13,10 +13,26 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import NoSuchElementException
-from PIL import Image
+from PIL import Image, ImageDraw
 import io
 import base64
 import time
+import urllib.parse
+import urllib
+import cv2
+import urllib3
+import requests
+from docx2pdf import convert
+import os
+import comtypes.client
+import re
+import pythoncom
+
+
+
+
+
+
 
 class Controller:
     def __init__(self):
@@ -24,14 +40,16 @@ class Controller:
         
     def get_final_url(self,url):
         try:
-            response = requests.get(url, allow_redirects=True)
+            http = urllib3.PoolManager()
+            response = requests.get(url, allow_redirects=True, timeout=10)
             return response.url
         except requests.exceptions.RequestException:
             return None
+            
 
         
     def clean_link(self, link):
-        if link and not link.startswith("mailto:") and not link.startswith("#"):
+        if link and not link.startswith("mailto:") and not link.startswith("#") and not link.startswith("tel:"):
             link = unquote(link).strip()
             # CHANGED TO WHILE LOOP
             while link.endswith("%20"):
@@ -39,17 +57,6 @@ class Controller:
             return link
         return None
 
-    def get_links_from_page(self, url):
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                links = [self.clean_link(link.get('href')) for link in soup.find_all('a', href=True)]
-                return [link for link in links if link is not None]  # Filter out None values
-            else:
-                return []
-        except requests.exceptions.RequestException:
-            return []
 
     def get_links_from_page_concurrently(self, url):
         try:
@@ -89,13 +96,22 @@ class Controller:
         for link_info in broken_links_report:
 
             link, page_link, section, relative, link_name = link_info
-            
+            found=False
+            tries=0
+            print('taking picture!')
             try:
-                photo = self.get_photo(link, link_name)
+                while tries<10 and not found:
+                    photo, found = self.get_photo(link, link_name, relative,section)
+                    tries+=1
             except Exception as e:
+                print(f'Error is {e}')
+                photo='icon/photo_no_available.png'
+            
+            if 'None' in photo:
                 photo='icon/photo_no_available.png'
             paragraph = document.add_paragraph()
-            link_name=self.word_link_cleaner(link_name)
+            if 'Main Navigation' in section or 'tab' in link_name or 'accordion' in link_name:
+                link_name=self.word_link_cleaner(link_name)
             # Add the link as a run with hyperlink properties
             run = paragraph.add_run("• Broken link on ")
             self.add_hyperlink(paragraph,link,link)
@@ -118,14 +134,22 @@ class Controller:
             run = paragraph.add_run(f" and the link is pointing to : ")
             run.font.color.rgb = RGBColor(0, 0, 0)  # Set text color to black
 
-            # Add bold link_name text
-            self.add_hyperlink(paragraph, page_link, page_link)
+            # Add bold link_name text with hyperlink
+            if page_link != relative and relative.startswith("http"):
+                link_display = relative  
+            else:
+                link_display = page_link  
+            self.add_hyperlink(paragraph, page_link, link_display)
 
 
             #PUT PHOTO HERE ON WORD
             if photo:  # Check if photo is obtained
-                document.add_picture(photo, width=Inches(5))  # Add photo to document
-
+                try:
+                    document.add_picture(photo, width=Inches(5))  # Add photo to document
+                except Exception as e:
+                    photo='icon/photo_no_available.png'
+                    print('Photo not found continuing with default picture')
+                    document.add_picture(photo, width=Inches(5))
 
             # Add a bullet point after each link
             paragraph_format = paragraph.paragraph_format
@@ -136,30 +160,94 @@ class Controller:
         self.clean_folder('photos')
 
         # Save the document to the specified file path
-        document.save(output_file)  
+        document.save(output_file) 
+        print('Document Saved')
+        time.sleep(3)
+        self.create_pdf_from_word(output_file)
+
+
+    def create_pdf_from_word(self, filename):
+        try:
+            pythoncom.CoInitialize()  # Initialize COM library
+
+            # Output PDF filename
+            output_pdf_filename = f"{os.path.splitext(filename)[0]}.pdf"  # Using the same name as the Word file, but with PDF extension
+
+            # Initialize COM and Word
+            word = comtypes.client.CreateObject('Word.Application')
+            try:
+                doc = word.Documents.Open(os.path.abspath(filename))
+            except Exception as e:
+                print(f"An error occurred: {e}")
+            # Convert Word to PDF
+            doc.SaveAs(os.path.abspath(output_pdf_filename), FileFormat=17)
+
+            # Print the full path of the saved PDF file
+            pdf_full_path = os.path.abspath(output_pdf_filename)
+            print(f"Word document '{filename}' converted to PDF and saved as '{pdf_full_path}'.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            # Close the document and quit Word
+            doc.Close()
+            word.Quit()
 
     def word_link_cleaner(self, link):
-        try:
-            links = link.split('/')
-        except Exception as e:
-            pass
-        return links[-1]      
+        if 'http' in link:
+            return link
+        else:
+            try:
+                links = link.split('/')
+            except Exception as e:
+                pass
+            return links[-1]      
 
-    def get_photo(self, link, link_name):
-        # Initialize WebDriver and navigate to the webpage
+    def find_first_number_index(self, s):
+        match = re.search(r'\d', s)
+        if match:
+            return match.end()
+        return -1
+    
+    def get_photo(self, link, link_name, relative_link, section):
+                # Initialize WebDriver and navigate to the webpage
+        
         driver = webdriver.Chrome()
         driver.maximize_window()  # Open the WebDriver in full screen mode
 
         driver.get(f"{link}")
 
-
+        if link_name == 'None' or link_name == None:
+            link_name=''
 
         # Search for the sequence of tabs/dropdowns
         search_sequence = link_name
-        print(link_name)
-        # Split the sequence into individual steps
-        clicks = search_sequence.split('/')
-        search_word = clicks[-1]  # The last element in the sequence
+        print(f'Getting photo, link name is: {link_name}')
+        # Check the conditions before splitting
+        rest_sequence=search_sequence
+        clicks=[search_sequence]
+        if not search_sequence.startswith('http') and ('Main Navigation' in section or 'accordion' in link_name or 'tab' in link_name):
+            print('splitting')
+            try:
+                print(search_sequence)
+                first_number_index = self.find_first_slash_index(search_sequence)
+                print(first_number_index)
+                if first_number_index != -1:
+                    tab_or_accordion = search_sequence[:first_number_index]
+                    rest_sequence = search_sequence[first_number_index:]
+                    if rest_sequence.startswith('/http'):
+                        rest_sequence = rest_sequence[1:]
+                    clicks = [tab_or_accordion, rest_sequence]
+                    print(f"Splits are: {clicks}")
+                    print(f'Sequence is: {rest_sequence}')
+                else:
+                    # Handle the case where there's no split or only one part
+                    clicks = [search_sequence]
+            except Exception as e:
+                print(f"An error occurred: {e}")
+        if rest_sequence.startswith('/'):
+            search_word = rest_sequence[1:]
+        else:
+            search_word=rest_sequence
 
         #target_href = "accordion3"
         if "'" in search_word:
@@ -171,18 +259,18 @@ class Controller:
 
         # Loop through the clicks, excluding the last one
         while len(clicks) > 1:  # Exclude the last element
+            print('Tab or accordion detected...')
             click = clicks.pop(0)  # Get the next click from the list
+            driver.execute_script("window.scrollTo(0, 0);")
             while True:
                 try:
                     print(click)
                     # Find and click on the tab or dropdown element
-                    if 'accordion' in click:
-                        click_element = driver.find_element(By.CSS_SELECTOR, f"a[href='#{click}']")
-                    elif 'tab' in click:
+                    if 'accordion' in click or 'tab' in click:
                         click_element = driver.find_element(By.CSS_SELECTOR, f"a[href='#{click}']")
                     else:
                         click_element = driver.find_element(By.XPATH, f"//a[contains(text(), '{click}')]")
-                    #click_element = driver.find_element(By.CSS_SELECTOR, f"a[href='#{target_href}']")
+
                     
                     # Scroll the element into view using JavaScript
                     driver.execute_script("arguments[0].scrollIntoView();", click_element)
@@ -213,37 +301,168 @@ class Controller:
 
                     # Update the previous scroll height
                     prev_scroll_height = scroll_height
-
-
+        
+        driver.execute_script("window.scrollTo(0, 0);")
         # Define a variable to keep track of previous scroll height
         prev_scroll_height = 0
         photo_name = search_word
+        photo='photo_no_available.png'
+        #if search_word.startswith('http') or search_word.startswith('/') or search_word == '' or search_word == ' ' or 'tab' in search_word or 'accordion'  in search_word':
+        if '/' in search_word or search_word == '' or search_word == ' ':
+            photo_name='photo_with_link'
         # Scroll loop
+        element_found=False
         while True:
+            print('Taking picture')
             try:
-                element = driver.find_element(By.XPATH, f"//*[contains(text(), '{search_word}')]")
+
+                #print(f'Search word is {search_word}')
+                #element = driver.find_element(By.XPATH, f"//*[contains(text(), '{search_word}')]")
+                #print(f'element all is: {element}')
+
+                #element = driver.find_element(By.XPATH, f"//a[contains(text(), '{search_word}')]")
+                element=None
+                elements1=[]
+                elements2=[]
+                try:
+                    print(f'Search word is: "{search_word}"')
+                    if search_word != '' or search_word != None:
+                        elements1 = driver.find_elements(By.XPATH, f"//a[contains(text(), '{search_word}')]")
+                    
+                    saved_link=relative_link
+                    relative_href=relative_link
+                    if 'Main Navigation' in section:
+                        relative_href = relative_link.split('/')[-1]  # Extract the fragment from the full URL
+                    if relative_href is None or relative_href=='':
+                        relative_href=saved_link
+                    elements2 = driver.find_elements(By.CSS_SELECTOR, f"a[href*='{relative_href}']")
+                    
+                    if not elements2:
+                        modified_string = relative_href.replace(" ", "%20")
+                        elements2 = driver.find_elements(By.CSS_SELECTOR, f"a[href*='{modified_string}']")
+                    
+                    print(f'Elements 2: {elements2}')
+                    common_elements = set(elements1) & set(elements2)
+                    common_elements_list = list(common_elements)
+                    print("Elements present in both lists:")
+                    print(common_elements_list)
+                    if common_elements_list:
+                        element=common_elements_list[0]
+                except Exception as e:
+                    print(f'Error is {e}')
+                
+                print(element)
+                print(search_word)
+                print(relative_href)
+                print(f'Elements 1: {elements1}')
+                print(f'Elements 2: {elements2}')
+                if element is None:
+                    element_is_found=False
+                    for element2 in elements2:
+                        print('looking for element in elements2')
+                        if search_word in element2.get_attribute("outerHTML") and not element_is_found:
+                            element = element2
+                            element_is_found=True
+                            break
+                        if element2:
+                            try:
+                                element = element2.find_element(By.TAG_NAME, 'img')
+                                print("Element contains a child <img> tag.")
+                                break
+                            except NoSuchElementException:
+                                print("Element does not contain a child <img> tag.")
+                    if not element_is_found:
+                        for element1 in elements2:
+                            if relative_href in element1.get_attribute("outerHTML") and not element_is_found:
+                                element = element1
+                                element_is_found=True
+                    if not element_is_found:
+                        element = driver.find_element(By.XPATH, f"//a[contains(text(), '{search_word}')]")
+                    
+                
+                #if len(click_elements) == 1:
+                #    click_element = click_elements[0]
+                #else:
+                #    click_element = driver.find_element(By.XPATH, f"//a[contains(text(), '{click}') and @href='#{relative_link}']")
+                #    print(f"The click element is then: {click_element}")
+                if element is None:
+                    parts = search_word.split('/')
+                    common_elements = []
+
+                    for part in parts:
+                        common_elements_part = driver.find_elements(By.XPATH, f"//a[contains(@href, '{part}')]")
+                        if common_elements_part:
+                            if not common_elements:
+                                common_elements = common_elements_part
+                            else:
+                                common_elements = [element for element in common_elements if element in common_elements_part]
+
+                    if common_elements:
+                        element = common_elements[0]  # Returning the first common element found
+                    else:
+                        element = None
+                        print('Element not found in page')
+
+                print(f'The element is: {element.get_attribute("outerHTML")}')
                 
                 # Get location and size of element
                 location = element.location
                 size = element.size
+                locy=location['y']
+
+                print(location)
+                print(size)
+                if location['y']>0 and location['x']>0:
+                    element_found=True
+                elif 'small navigation' in section:
+                    location['y']=100
+                    location['x']=200
+                    size['width']=400
+                    size['height']=100
+
+                window_size = driver.get_window_size()
+
+                # Extract width and height from the window size dictionary
+                window_width = window_size['width']
+                window_height = window_size['height']
+                
+                page_height = driver.execute_script("return document.body.scrollHeight")
+                
+                driver.execute_script(f"window.scrollBy(0, {location['y']});")
+                
+                time.sleep(3)
+                closeness=page_height-locy
+                print(f'Location of Element: {locy}')
+                print(f'closeness: {closeness}')
+
+                if closeness<window_height:
+                    print('Way too down')
+                    
+                    scrollAmmount=(400-(window_height-closeness))+120
+                    print(f'scrollAmmount: {scrollAmmount}')
+                    driver.execute_script(f"window.scrollBy(0, -{scrollAmmount});")
+                else:
+                    print("Not too down")
+                    driver.execute_script(f"window.scrollBy(0, -400);")
+
                 
 
                 # Scroll a bit more to ensure proper visibility
-                driver.execute_script(f"window.scrollBy(0, {location['y']-400});")
+                #driver.execute_script(f"window.scrollBy(0, -400);")
+                
+                
                 
                 # Give some time for the page to adjust after scrolling
                 time.sleep(1)
                 
-                element = driver.find_element(By.XPATH, f"//*[contains(text(), '{search_word}')]")
-                
-                
-                # Give some time for the page to adjust after scrolling
-                time.sleep(1)
-                
-                # Get location and size of element
-                location = element.location
-                size = element.size
-                
+                 # Define screenshot area around element
+                if location['y']<400:
+                    y1=int(location['y'] * 1.20)
+                    y2=int(y1 + size['height'] * 2.5)
+                else:
+                    y1=400
+                    y2=600
+                    
                 # Define screenshot area around element
                 if location['y']<200:
                     y=100
@@ -251,30 +470,50 @@ class Controller:
                 else:
                     y = 150
                     h = 600
+                    
                 
+                
+
+                scroll_height = driver.execute_script("return document.body.scrollHeight")
+
+                # Calculate the amount scrolled
+                scrolled_amount = scroll_height - prev_scroll_height
+                print('Saving rect')
+               
+                # Capture the screenshot using Selenium
                 screenshot_base64 = driver.get_screenshot_as_base64()
-                
-                # Convert the base64-encoded screenshot to a PIL Image
                 screenshot_bytes = base64.b64decode(screenshot_base64)
-                pil_image = Image.open(io.BytesIO(screenshot_bytes))
-                
-                
-                pil_image.save(f'photos/{photo_name}nocrop.png')
+                pil_image_with_rect = Image.open(io.BytesIO(screenshot_bytes))
+                print('Saved rect')
+                # Draw a rectangle on the specified area
+                draw = ImageDraw.Draw(pil_image_with_rect)
+                x1 = int(location['x'] * 1.20)
+                x2 = int(x1 + size['width'] * 1.60)+50
+                draw.rectangle([x1, y1, x2, y2], outline=(255, 0, 0), width=3)
+                print('Drawing')
+                # Save the screenshot with rectangle
+                pil_image_with_rect.save(f'photos/{photo_name}_with_rect.png')
 
-                cropped_image = pil_image.crop((0, y, pil_image.width, y + h))  # Crop only the specified height
+                # Crop the image
+                cropped_image = pil_image_with_rect.crop((0, y, pil_image_with_rect.width, y + h))  # Crop only the specified height
 
-                
-                #print(cropped_image)
-                
+                # Save the cropped image
                 cropped_image.save(f"photos/{photo_name}.png")
-                
-                # Save the screenshot
-                #pil_image.save("element_screenshot_pil1.png")
-                
-                print("Screenshot of the entire page captured.")
+
+                # Print the scrolled amount
+                print(f"Scrolled amount: {scrolled_amount}")
+
+                print(element.location)
+                print(element.size)
+
+                print("Screenshot of the element captured with rectangle.")
+
                 break
             except NoSuchElementException:
                 print("Element not found. Scrolling...")
+            
+            except Exception as e:
+                print(f"The error is {e}")
                 
             # Get the current scroll height
             scroll_height = driver.execute_script("return document.body.scrollHeight")
@@ -292,11 +531,20 @@ class Controller:
             
             # Update the previous scroll height
             prev_scroll_height = scroll_height
-
+            
         # Close the WebDriver
         driver.quit()
 
-        return f"photos/{photo_name}.png"
+        return f"photos/{photo_name}.png", element_found
+
+    def find_first_slash_index(self, s):
+        print(f'slash is: {s}')
+        match = re.search(r'/', s)
+
+        if match:
+            return match.start()
+        return -1
+
 
 
     def get_files_in_excel_folder(self):
@@ -311,9 +559,67 @@ class Controller:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 # Search for partial matches of the href attribute with page_link
-                
-                element = soup.find('a', href=lambda href: page_link in href)
-                
+                page_link=urllib.parse.unquote(page_link)  # Remove any URL encoding
+
+                delimiter_characters = ['~', '%0D', '%']
+                common_elements = []
+                saved_link=page_link
+                for delimiter in delimiter_characters:
+                    if delimiter in page_link:
+
+                        parts = page_link.split(delimiter)
+                        try:
+                            elements_part = [soup.find_all('a', href=lambda href: href is not None and part in href.strip()) for part in parts]
+
+                        except Exception as e:
+                            print('Error on First')
+                        print(f'Element parts are: {elements_part}')
+                        if elements_part:
+                            if not common_elements:
+                                common_elements = elements_part
+                            else:
+                                common_elements = [element for element in common_elements if element in elements_part]
+                        print(common_elements)
+                    if common_elements:
+                        element = common_elements[0][0]  # Returning the first common element found
+                        break
+                    else:
+                        element = soup.find('a', href=lambda href: href is not None and href.strip() == saved_link)
+
+                print('~~~~~~~~~~~~~~~~~~~')
+                print(saved_link)
+                if element is None:
+                    print('here Inside')
+                    print(saved_link)
+                    for delimiter in delimiter_characters:
+                        if delimiter in saved_link:
+
+                            parts = saved_link.split(delimiter)
+
+                            try:
+                                elements_part = [soup.find_all('a', href=lambda href: href is not None and part in href.strip()) for part in parts]
+
+                            except Exception as e:
+                                print('Error on Second')
+                            print(f'Element parts are: {elements_part}')
+                            if elements_part:
+                                if not common_elements:
+                                    common_elements = elements_part
+                                else:
+                                    common_elements = [element for element in common_elements if element in elements_part]
+                        
+                        if common_elements:
+                            if common_elements[0]:
+                                element = common_elements[0][0]  # Get the link from the second inner list
+                            elif common_elements[1]:
+                                element = common_elements[1][0]  # Get the link from the first inner list
+                        else:
+                            element = soup.find('a', href=lambda href: href is not None and href.strip() == saved_link)
+
+                        if element:
+                            break
+                    print(f'Elemento is: {element}')
+
                 if element:
                     element_name = 'No_name'
                     element_name = element.get_text(strip=True)
@@ -351,7 +657,7 @@ class Controller:
                             # Find the outer ul element with class "nav navbar-nav" within the nav_element
                             outer_ul = nav_element.find('ul', class_='nav navbar-nav')
 
-                            if outer_ul:
+                            if outer_ul and 'navbar-right' not in outer_ul.get('class', []):
                                 # Loop through <li> elements with class 'dropdown'
                                 for li in outer_ul.find_all('li', class_='dropdown'):
                                     # Check if the element is a descendant of the current <li>
@@ -361,8 +667,17 @@ class Controller:
                                         if dropdown_a:
                                             dropdown_name = dropdown_a.get_text(strip=True)
                                             return f"Main Navigation, tab name: {dropdown_name}", f"{dropdown_name}/{element_name}"
-                                return "Main Navigation", element_name
+                                    
+                                #return "Main Navigation, tab name: {}", element_name
 
+                        resources_li = element.find_parent('li', class_='dropdown resourcesForLinks')
+                        if resources_li:
+                            return "Main Navigation, tab name: Resources For Links", f"Resources For/{element_name}"
+
+                        # If not found in dropdowns, check in "Quick Links"
+                        quick_links_li = element.find_parent('li', class_='hidden-below-1365')
+                        if quick_links_li:
+                            return "Main Navigation, tab name: Quick Links", f"Quick Links/{element_name}"
 
                         footer_element = element.find_parent('footer')
                         if footer_element:
@@ -383,17 +698,17 @@ class Controller:
                         
                         sidr_container_element = element.find_parent('div', id='sidr-container')
                         if sidr_container_element:
-                            return "Somewhere unknown", element_name
+                            return "General content", element_name
                     else:
                         return "TemplateUnknown","None"
                 #Error case
-                return "Unknown-notfound","None"  # If the element is not found in any of the relevant outer elements
+                return "General content","None"  # If the element is not found in any of the relevant outer elements
             else:
                 return "Unknown-pageerror","None"  # If there was an issue fetching the page
         except requests.exceptions.RequestException:
             return "Unknown-connectionerror","None"  # If there was a connection error or other issues
 
-    import os
+
 
     def clean_folder(self, folder_path):
         # Check if the folder exists
@@ -455,3 +770,8 @@ class Controller:
         paragraph._p.append(hyperlink)
 
         return hyperlink
+
+    
+
+
+

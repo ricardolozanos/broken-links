@@ -1,0 +1,6 @@
+Page,Broken Link,Section,Relative Link,Link Name
+https://www.utep.edu/cs/junk/test-page-cs.html,https://www.utep.edu/cs/junk/,Main Content (Top small navigation),/cs/junk,junk
+https://www.utep.edu/cs/junk/test-page-cs.html,https://www.utep.edu/cs/support/computing_facilities.html,Left Navigation,../support/computing_facilities.html,Computing Facilities
+https://www.utep.edu/cs/junk/test-page-cs.html,https://www.utep.edu/cs/advising/index.html,Left Navigation,../advising/index.html,Advising
+https://www.utep.edu/cs/junk/test-page-cs.html,https://www.utep.edu/cs/index-temp,Main Content,/cs/index-temp,Test Link
+https://www.utep.edu/cs/junk/test-page-cs.html,https://www.utep.edu/cs/opportunities/index.html,Left Navigation,../opportunities/index.html,Opportunities

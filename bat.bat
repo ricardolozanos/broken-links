@@ -9,4 +9,5 @@ cd "C:\Users\Ricar\Desktop\script"
 REM Run the Python script
 python main.py
 
-
+REM Pause the batch script to keep the window open
+pause

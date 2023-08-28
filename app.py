@@ -14,6 +14,20 @@ import concurrent.futures
 import threading
 import time  
 import queue  
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import requests
+from requests.adapters import HTTPAdapter, Retry
+import urllib3
+import threading
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from urllib3.exceptions import TimeoutError
+import warnings
+from requests.exceptions import Timeout, SSLError
+
+warnings.filterwarnings("ignore")
+
+
 
 
 
@@ -270,9 +284,10 @@ class App:
             
             for link_cell, template_cell in zip(sheet[column_with_links], sheet[column_with_templates]):
                 if link_cell.value:
+                    
                     link = link_cell.value
                     template = template_cell.value
-
+                    print(f'Checking page: {link}')
                     total_links_checked += 1
                     page_links = self.controller.get_links_from_page_concurrently(link)
                     
@@ -326,89 +341,83 @@ class App:
             print(f"Error: An unexpected error occurred while processing the file '{excel_file}': {e}")
             return []
     
-    def check_link(self, page_progress_var, i, link, page_link, template, broken_links_report,link_cell, page_progress):
+    def check_link(self, page_progress_var, i, link, page_link, template, broken_links_report, link_cell, page_progress):
+        
         absolute_link = urljoin(link, page_link)
         final_url = self.controller.get_final_url(absolute_link)
+        if final_url is None:
+            final_url=absolute_link
+        
         section, link_name = self.controller.identify_section(link, page_link, template)
         broken_link_info = (link, final_url, section, page_link, link_name)  # Define broken_link_info once
-
-        if section =='Footer':
+        if section == 'Footer' or \
+            '.aspx' in page_link or \
+            page_link.endswith('.php') or \
+            'Resources For' in link_name or \
+            'Quick Links' in link_name or \
+            any(platform in page_link for platform in ['linkedin.com','facebook.com', 'twitter.com', 'youtube.com', 'instagram.com', 'tumblr.com', 'pinterest.com','.aspx']):
             return
-        
+
         if final_url in self.brokenLinks:
             print("Broken Link already found before...")
             if broken_link_info not in broken_links_report:  # Check for duplicates
                 broken_links_report.append(broken_link_info)
                 print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
             else:
-                #broken_links_report.append(broken_link_info)
+                # broken_links_report.append(broken_link_info)
                 print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
             return
-        
+
         if final_url in self.workingLinks:
             return
-
+        headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        }
+        url=final_url
+        http = urllib3.PoolManager(cert_reqs='CERT_NONE')
         try:
-            if final_url is None:
-                final_url=link
-            try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
-                }
-                response = requests.get(final_url, headers=headers)
-
-                if response.status_code != 200:
+            response = requests.get(url, headers=headers, timeout=3.0, verify=False)
+            response2 = http.request('GET', url, headers=headers, timeout=3.0)
+            if response.status_code != 200 or response2.status != 200:
+                if url.startswith('http:'):
+                    # Construct the HTTPS version of the URL
+                    url = url.replace('http:', 'https:', 1)
+                    print('Link changed')
+                    try:
+                        response = requests.get(url, headers=headers, timeout=3.0, verify=False)
+                        response2 = http.request('GET', url, headers=headers, timeout=3.0)
+                        if response.status_code != 200 or response2.status != 200:
+                            self.brokenLinks.append(final_url)
+                            if broken_link_info not in broken_links_report:  # Check for duplicates
+                                broken_links_report.append(broken_link_info)
+                                print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
+                            else:
+                                # broken_links_report.append(broken_link_info)
+                                print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
+                    except Exception as e:
+                        print(f"Error occurred for link: {link}, Error is {e}")
+                else:
                     self.brokenLinks.append(final_url)
                     if broken_link_info not in broken_links_report:  # Check for duplicates
                         broken_links_report.append(broken_link_info)
                         print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
                     else:
-                        #broken_links_report.append(broken_link_info)
+                        # broken_links_report.append(broken_link_info)
                         print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
-                else:
-                    self.workingLinks.append(final_url)
-                    pass  # No need for this message
-            except requests.exceptions.SSLError as ssl_error:
-                # Attempt the request again with verify=False in case of SSL verification error
-                print(f"SSL verification error occurred for link: {link}, Error: {ssl_error}")
-                try:
-                    response = requests.get(final_url, headers=headers, verify=False)
-                    if response.status_code != 200:
-                        self.brokenLinks.append(final_url)
+            else:
+                self.workingLinks.append(final_url)
+                pass  # No need for this message
 
-                        if broken_link_info not in broken_links_report:  # Check for duplicates
-                            broken_links_report.append(broken_link_info)
-                            print(f"Broken link found on page '{link}' in '{section}' section: {final_url}", end='\r')
-                        else:
-                            #broken_links_report.append(broken_link_info)
-                            print(f"Duplicate broken link found on page '{link}': {final_url}", end='\r')
-                    else:
-                        self.workingLinks.append(final_url)
-                        pass  
-                except requests.exceptions.RequestException as e:
-                    self.brokenLinks.append(final_url)
-
-                    if broken_link_info not in broken_links_report:
-                        broken_links_report.append(broken_link_info)
-                    else:
-                        print("Error...")
-                        #broken_links_report.append(broken_link_info)
-                    print(f"Error occurred for link (retry): {link}, Error: {e}")
-            except requests.exceptions.RequestException:
-                self.brokenLinks.append(final_url)
-
-                if broken_link_info not in broken_links_report:  # Check for duplicates
-                    broken_links_report.append(broken_link_info)
-                    print(f"Connection error occurred for link on page '{link}' in '{section}' section: {final_url}", end='\r')
-                else:
-                    #broken_links_report.append(broken_link_info)
-                    print(f"Duplicate connection error occurred for link on page '{link}': {final_url}", end='\r')
             page_progress_var.set(i + 1)
             self.update_link_progress(i + 1, self.total_links)
             self.root.update_idletasks()
-        except TypeError as e:
-            print(f"Error: Unexpected value in cell ({link_cell.row}, {link_cell.column}). {e}")
-            print(f"Skipping the link and continuing...")
+        except SSLError as ssl_error:
+            print(f'SSLError {ssl_error}')
+        except Timeout as timeout_error:
+            print(f'Timeout Error {timeout_error}')
+        except Exception as e:
+                print(f"Error occurred for link: {link}, Error is {e}")
+
         
 
 

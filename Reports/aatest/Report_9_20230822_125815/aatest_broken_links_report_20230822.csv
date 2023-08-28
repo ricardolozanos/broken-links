@@ -1,0 +1,11 @@
+Page,Broken Link,Section,Relative Link,Link Name
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/people/faculty_and_staff.html,Somewhere unknown,../people/faculty_and_staff.html,People
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/main-menu/,Main Content (Top small navigation),/cs/main-menu,main-menu
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/research/research_centers.html,Somewhere unknown,../research/research_centers.html,Research
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/graduate/_Files/docs/admission-and-enrollment/fast-track.pdf,Main Content,http://www.utep.edu/graduate/_Files/docs/admission-and-enrollment/fast-track.pdf,fast-track program (BSCS/MSSwE)
+https://www.utep.edu/cs/main-menu/sfs_application.html,http://www.cs.utep.edu/wp-content/uploads/2016/02/PLAW-113publ274.pdf,Main Content,http://www.cs.utep.edu/wp-content/uploads/2016/02/PLAW-113publ274.pdf,Cybersecurity Enhancement Act of 2014 document
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/main-menu/organizations.html,Left Navigation,organizations.html,Organizations
+https://www.utep.edu/cs/main-menu/sfs_application.html,http://www.cs.utep.edu/utep-sfs-program/sfs-application-process/,Main Content,http://www.cs.utep.edu/utep-sfs-program/sfs-application-process/,FOLLOWING LINK
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/entity/open.act?type=symlink&id=1a2ffcaf816c09bf244acb94b5b6fadd,Left Navigation,/entity/open.act?type=symlink&id=1a2ffcaf816c09bf244acb94b5b6fadd,Give Now
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/main-menu/internships.html,Left Navigation,internships.html,Internships
+https://www.utep.edu/cs/main-menu/sfs_application.html,https://www.utep.edu/cs/main-menu/advising.html,Left Navigation,advising.html,Advising
